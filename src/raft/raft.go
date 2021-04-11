@@ -176,8 +176,8 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		reply.VoteGranted, reply.Term = true, rf.currentTerm
 		return
 	}
-	if rf.currentTerm > args.Term || // valid candidate
-		(rf.currentTerm == args.Term && rf.votedFor != -1) { // the server has voted in this term
+	if rf.currentTerm > args.Term ||
+		(rf.currentTerm == args.Term && rf.votedFor != -1) {
 		reply.Term, reply.VoteGranted = rf.currentTerm, false
 		return
 	}
