@@ -1,13 +1,20 @@
 package kvraft
 
-import "../labrpc"
-import "crypto/rand"
-import "math/big"
+import (
+	"crypto/rand"
+	"math/big"
+	"sync"
 
+	"github.com/yunuskilicdev/distributedsystems/src/labrpc"
+)
 
 type Clerk struct {
 	servers []*labrpc.ClientEnd
 	// You will have to modify this struct.
+	mu        sync.Mutex
+	clientId  int64
+	requestId int64
+	leader    int
 }
 
 func nrand() int64 {
@@ -21,6 +28,9 @@ func MakeClerk(servers []*labrpc.ClientEnd) *Clerk {
 	ck := new(Clerk)
 	ck.servers = servers
 	// You'll have to add code here.
+	ck.leader = 0
+	ck.clientId = nrand()
+	ck.requestId = 0
 	return ck
 }
 
@@ -39,7 +49,24 @@ func MakeClerk(servers []*labrpc.ClientEnd) *Clerk {
 func (ck *Clerk) Get(key string) string {
 
 	// You will have to modify this function.
-	return ""
+	//fmt.Printf("Get %s\n", key)
+	args := GetArgs{}
+	args.Key = key
+	args.ClientId = ck.clientId
+	ck.mu.Lock()
+	args.RequestId = ck.requestId
+	ck.requestId++
+	ck.mu.Unlock()
+
+	for ; ; ck.leader = (ck.leader + 1) % len(ck.servers) {
+		server := ck.servers[ck.leader]
+		reply := GetReply{}
+		ok := server.Call("KVServer.Get", &args, &reply)
+		if ok && reply.Err != ErrWrongLeader {
+			//fmt.Printf("Get Response %s\n", reply.Value)
+			return reply.Value
+		}
+	}
 }
 
 //
@@ -54,11 +81,31 @@ func (ck *Clerk) Get(key string) string {
 //
 func (ck *Clerk) PutAppend(key string, value string, op string) {
 	// You will have to modify this function.
+	args := PutAppendArgs{}
+	args.Key = key
+	args.Value = value
+	args.Op = op
+	args.ClientId = ck.clientId
+	ck.mu.Lock()
+	args.RequestId = ck.requestId
+	ck.requestId++
+	ck.mu.Unlock()
+
+	for ; ; ck.leader = (ck.leader + 1) % len(ck.servers) {
+		server := ck.servers[ck.leader]
+		reply := PutAppendReply{}
+		ok := server.Call("KVServer.PutAppend", &args, &reply)
+		if ok && reply.Err != ErrWrongLeader {
+			return
+		}
+	}
 }
 
 func (ck *Clerk) Put(key string, value string) {
+	//fmt.Printf("Put %s : %s\n", key, value)
 	ck.PutAppend(key, value, "Put")
 }
 func (ck *Clerk) Append(key string, value string) {
+	//fmt.Printf("Append %s : %s\n", key, value)
 	ck.PutAppend(key, value, "Append")
 }

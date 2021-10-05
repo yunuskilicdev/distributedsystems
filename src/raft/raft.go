@@ -19,13 +19,14 @@ package raft
 
 import (
 	"bytes"
-	"github.com/yunuskilicdev/distributedsystems/src/labgob"
 	"math/rand"
 	"sync"
+	"sync/atomic"
 	"time"
+
+	"github.com/yunuskilicdev/distributedsystems/src/labgob"
+	"github.com/yunuskilicdev/distributedsystems/src/labrpc"
 )
-import "sync/atomic"
-import "github.com/yunuskilicdev/distributedsystems/src/labrpc"
 
 // import "bytes"
 // import "../labgob"
@@ -390,7 +391,7 @@ func (rf *Raft) manageLifecycle() {
 		} else if status == Leader {
 			rf.manageLeader()
 		}
-		time.Sleep(100 * time.Millisecond)
+		time.Sleep(50 * time.Millisecond)
 	}
 }
 

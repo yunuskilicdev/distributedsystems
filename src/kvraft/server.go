@@ -1,12 +1,14 @@
 package kvraft
 
 import (
-	"../labgob"
-	"../labrpc"
 	"log"
-	"../raft"
 	"sync"
 	"sync/atomic"
+	"time"
+
+	"github.com/yunuskilicdev/distributedsystems/src/labgob"
+	"github.com/yunuskilicdev/distributedsystems/src/labrpc"
+	"github.com/yunuskilicdev/distributedsystems/src/raft"
 )
 
 const Debug = 0
@@ -18,11 +20,22 @@ func DPrintf(format string, a ...interface{}) (n int, err error) {
 	return
 }
 
-
 type Op struct {
 	// Your definitions here.
 	// Field names must start with capital letters,
 	// otherwise RPC will break.
+	Command   string // "get" | "put" | "append"
+	ClientId  int64
+	RequestId int64
+	Key       string
+	Value     string
+}
+
+type OpResponse struct {
+	Op        Op
+	ClientId  int64
+	RequestId int64
+	Err       string
 }
 
 type KVServer struct {
@@ -35,15 +48,135 @@ type KVServer struct {
 	maxraftstate int // snapshot if log grows this big
 
 	// Your definitions here.
+	data map[string]string
+	ack  map[int64]int64
+	ch   map[int]chan OpResponse
 }
-
 
 func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 	// Your code here.
+	entry := Op{}
+	entry.Command = "Get"
+	entry.ClientId = args.ClientId
+	entry.RequestId = args.RequestId
+	entry.Key = args.Key
+
+	index, _, isLeader := kv.rf.Start(entry)
+	if !isLeader {
+		reply.Err = ErrWrongLeader
+		return
+	}
+
+	kv.mu.Lock()
+	if _, ok := kv.ch[index]; !ok {
+		kv.ch[index] = make(chan OpResponse, 1)
+	}
+	kv.mu.Unlock()
+
+	select {
+	case result := <-kv.ch[index]:
+		if isMatch(entry, result) {
+			reply.Value = kv.data[result.Op.Key]
+			reply.Err = OK
+			return
+		}
+	case <-time.After(250 * time.Millisecond):
+		reply.Value = ""
+		reply.Err = ErrWrongLeader
+		return
+	}
 }
 
 func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 	// Your code here.
+	entry := Op{}
+	entry.Command = args.Op
+	entry.ClientId = args.ClientId
+	entry.RequestId = args.RequestId
+	entry.Key = args.Key
+	entry.Value = args.Value
+
+	index, _, isLeader := kv.rf.Start(entry)
+	if !isLeader {
+		reply.Err = ErrWrongLeader
+		return
+	}
+
+	kv.mu.Lock()
+	if _, ok := kv.ch[index]; !ok {
+		kv.ch[index] = make(chan OpResponse, 1)
+	}
+	kv.mu.Unlock()
+
+	select {
+	case result := <-kv.ch[index]:
+		if isMatch(entry, result) {
+			reply.Err = OK
+			return
+		}
+	case <-time.After(250 * time.Millisecond):
+		reply.Err = ErrWrongLeader
+		return
+	}
+}
+
+func (kv *KVServer) maintanance() {
+	for {
+		msg := <-kv.applyCh
+		kv.mu.Lock()
+		op := msg.Command.(Op)
+		response := kv.applyOp(op, msg.CommandIndex)
+		if ch, ok := kv.ch[msg.CommandIndex]; ok {
+			select {
+			case <-ch: // drain bad data
+			default:
+			}
+		} else {
+			kv.ch[msg.CommandIndex] = make(chan OpResponse, 1)
+		}
+		kv.ch[msg.CommandIndex] <- response
+		kv.mu.Unlock()
+	}
+}
+
+func (kv *KVServer) applyOp(op Op, commandIndex int) OpResponse {
+
+	result := OpResponse{}
+	result.ClientId = op.ClientId
+	result.RequestId = op.RequestId
+	result.Op = op
+	switch op.Command {
+	case "Get":
+		if _, ok := kv.data[op.Key]; ok {
+			result.Err = OK
+		} else {
+			result.Err = ErrNoKey
+		}
+	case "Put":
+		if !kv.isDuplicated(op) {
+			kv.data[op.Key] = op.Value
+		}
+		result.Err = OK
+	case "Append":
+		if !kv.isDuplicated(op) {
+			kv.data[op.Key] += op.Value
+		}
+		result.Err = OK
+	}
+	kv.ack[op.ClientId] = op.RequestId
+	return result
+}
+
+func isMatch(entry Op, response OpResponse) bool {
+	return entry.ClientId == response.ClientId && entry.RequestId == response.RequestId
+}
+
+func (kv *KVServer) isDuplicated(op Op) bool {
+	lastRequestId, ok := kv.ack[op.ClientId]
+	if ok {
+		return lastRequestId >= op.RequestId
+	}
+	return false
 }
 
 //
@@ -96,6 +229,9 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 	kv.rf = raft.Make(servers, me, persister, kv.applyCh)
 
 	// You may need initialization code here.
-
+	kv.data = make(map[string]string)
+	kv.ack = make(map[int64]int64)
+	kv.ch = make(map[int]chan OpResponse)
+	go kv.maintanance()
 	return kv
 }
